@@ -1,3 +1,5 @@
+package com.bridgelabz.async
+
 import java.net.http.{HttpClient, HttpRequest}
 
 import akka.actor.ActorSystem
@@ -6,9 +8,9 @@ import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.{HttpResponse, StatusCode}
 import akka.http.scaladsl.server.{Directives, ExceptionHandler, Route}
 
-import scala.concurrent.{ExecutionContext, Future}
-import scala.util.parsing.json.{JSON, JSONObject}
+import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
+
 import spray.json._
 
 /**
@@ -48,39 +50,48 @@ object Routes extends App with Directives {
 
   /**
    * handles all the get post requests to appropriate path endings
+   *
    * @return
    */
-  def route : Route =
+  def route: Route =
     handleExceptions(exceptionHandler) {
       Directives.concat(
         Directives.get {
           Directives.concat(
             // GET "/getJson" path to fetch user objects in JSON format
             path("request") {
-              val url = "http://newsapi.org/v2/everything?q=bitcoin&sortBy=publishedAt&apiKey="+apiKey
+              val url = "http://newsapi.org/v2/everything?q=bitcoin&sortBy=publishedAt&apiKey=" + apiKey
               val request = HttpRequest.newBuilder().GET().uri(java.net.URI.create(url)).build()
               val client = HttpClient.newBuilder().build()
               val response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString())
 
               val statusCode: StatusCode = response.statusCode()
-              if(!statusCode.equals(StatusCodes.OK)){
+              if (!statusCode.equals(StatusCodes.OK)) {
                 println(response.statusCode() + ": " + response.body())
                 complete("URL did not respond, hence we could not save the data. Try again later!")
               }
-              else{
+              else {
                 //db operations
                 println(response.body())
                 val jsonResult = response.body().parseJson
-                //Config.sendCSVRequest(jsonResult)
-                onComplete(Config.sendRequest(jsonResult)){
-                  _ => complete("Downloaded your request and it has been stored with us. Thank you!")
+                var csvFuture = Config.sendCSVRequest(jsonResult)
+                var dbFuture = Config.sendRequest(jsonResult)
+
+                var printMessage: String = "Successfully downloaded and inserted the data. Thank you!"
+                csvFuture.onComplete {
+                  case Failure(_) => printMessage = "CSV file could not be updated."
                 }
+                dbFuture.onComplete {
+                  case Failure(_) => printMessage = "Database could not be updated."
+                }
+
+                complete(printMessage)
               }
             })
         })
     }
 
-  val binder = Http().newServerAt(host,port).bind(route)
+  val binder = Http().newServerAt(host, port).bind(route)
   binder.onComplete {
     case Success(serverBinding) => println(println(s"Listening to ${serverBinding.localAddress}"))
     case Failure(error) => println(s"Error : ${error.getMessage}")
