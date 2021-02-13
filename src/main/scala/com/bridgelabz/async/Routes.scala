@@ -7,10 +7,10 @@ import akka.http.javadsl.model.StatusCodes
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.{HttpResponse, StatusCode}
 import akka.http.scaladsl.server.{Directives, ExceptionHandler, Route}
+import com.typesafe.scalalogging.Logger
 
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
-
 import spray.json._
 
 /**
@@ -19,11 +19,14 @@ import spray.json._
  * Author: Rajat G.L.
  */
 object Routes extends App with Directives {
+
+  // $COVERAGE-OFF$
   //host and port numbers set via respective environment variables
   val host = System.getenv("Host")
   val port = System.getenv("Port").toInt
-  private val apiKey = "67adaed5605f4aa0ba899fb73c0d9ef2"
+  val apiKey = System.getenv("NEWS_API_KEY")
 
+  val logger = Logger("Routes")
   //maintains a pool of actors
   implicit val system: ActorSystem = ActorSystem("AS")
   //maintains and executes actor system
@@ -31,35 +34,38 @@ object Routes extends App with Directives {
 
   // Handling Arithmetic and Null Pointer Exceptions
   val exceptionHandler = ExceptionHandler {
-    case _: ArithmeticException =>
+    case aex: ArithmeticException =>
       extractUri { uri =>
-        println(s"Request to $uri could not be handled normally")
-        complete(HttpResponse(400, entity = "Number could not be parsed. Is there a text were a number should be?"))
+        logger.error(s"Request to $uri could not be handled normally: ${aex.getMessage}")
+        complete(HttpResponse(StatusCodes.INTERNAL_SERVER_ERROR.intValue(), entity = "Number could not be parsed. Is there a text were a number should be?"))
       }
-    case _: NullPointerException =>
+    case nex: NullPointerException =>
       extractUri { uri =>
-        println(s"Request to $uri could not be handled normally")
-        complete(HttpResponse(402, entity = "Null value found while parsing the data. Contact the admin."))
+        logger.error(s"Request to $uri could not be handled normally: ${nex.getMessage}")
+        complete(HttpResponse(StatusCodes.INTERNAL_SERVER_ERROR.intValue(), entity = "Null value found while parsing the data. Contact the admin."))
       }
-    case _: Exception =>
+    case ex: Exception =>
       extractUri { uri =>
-        println(s"Request to $uri could not be handled normally")
-        complete(HttpResponse(408, entity = "Some error occured. Please try again later."))
+        logger.error(s"Request to $uri could not be handled normally: ${ex.getMessage}")
+        complete(HttpResponse(StatusCodes.INTERNAL_SERVER_ERROR.intValue(), entity = "Some error occured. Please try again later."))
       }
   }
 
+
+  // $COVERAGE-ON$
   /**
    * handles all the get post requests to appropriate path endings
    *
-   * @return
+   * @return Future[Done]
    */
-  def route: Route =
+  def route(apiKey: String = apiKey, config: Config = new Config): Route =
     handleExceptions(exceptionHandler) {
       Directives.concat(
         Directives.get {
           Directives.concat(
-            // GET "/getJson" path to fetch user objects in JSON format
+            //Get path to receive confirmation message regarding data insertion
             path("request") {
+
               val url = "http://newsapi.org/v2/everything?q=bitcoin&sortBy=publishedAt&apiKey=" + apiKey
               val request = HttpRequest.newBuilder().GET().uri(java.net.URI.create(url)).build()
               val client = HttpClient.newBuilder().build()
@@ -67,15 +73,15 @@ object Routes extends App with Directives {
 
               val statusCode: StatusCode = response.statusCode()
               if (!statusCode.equals(StatusCodes.OK)) {
-                println(response.statusCode() + ": " + response.body())
+                logger.debug(url + ": " + response.statusCode() + ": " + response.body())
                 complete("URL did not respond, hence we could not save the data. Try again later!")
               }
               else {
-                //db operations
-                println(response.body())
+                //converts JavaString to JSON
                 val jsonResult = response.body().parseJson
-                var csvFuture = Config.sendCSVRequest(jsonResult)
-                var dbFuture = Config.sendRequest(jsonResult)
+
+                val csvFuture = config.sendCSVRequest(jsonResult)
+                val dbFuture = config.sendRequest(jsonResult)
 
                 var printMessage: String = "Successfully downloaded and inserted the data. Thank you!"
                 csvFuture.onComplete {
@@ -91,9 +97,11 @@ object Routes extends App with Directives {
         })
     }
 
-  val binder = Http().newServerAt(host, port).bind(route)
+  // $COVERAGE-OFF$
+  //Server Binding
+  val binder = Http().newServerAt(host, port).bind(route())
   binder.onComplete {
-    case Success(serverBinding) => println(println(s"Listening to ${serverBinding.localAddress}"))
-    case Failure(error) => println(s"Error : ${error.getMessage}")
+    case Success(serverBinding) => logger.info(s"Listening to ${serverBinding.localAddress}")
+    case Failure(error) => logger.error(s"Error : ${error.getMessage}")
   }
 }
